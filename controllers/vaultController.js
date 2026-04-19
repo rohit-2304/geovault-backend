@@ -108,19 +108,31 @@ exports.openVault = async (req, res) => {
 
         if (result.rows.length === 0) {
             // Distinguish between expired and out-of-range for a better UX
-            const checkQuery = `SELECT expires_at FROM vaults WHERE id = $1`;
-            const checkResult = await db.query(checkQuery, [id]);
+            const checkQuery = `
+                SELECT expires_at,
+                       ROUND(ST_Distance(
+                           location::geography,
+                           ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography
+                       ))::integer AS distance_m
+                FROM vaults WHERE id = $1
+            `;
+            const checkResult = await db.query(checkQuery, [id, lon, lat]);
             if (checkResult.rows.length === 0) {
                 console.warn('[openVault] BLOCKED: vault does not exist');
                 return res.status(403).json({ code: 'GEO_NOT_FOUND', error: 'This vault does not exist or has already been used.' });
             }
-            const expired = new Date(checkResult.rows[0].expires_at) < new Date();
+            const { expires_at, distance_m } = checkResult.rows[0];
+            const expired = new Date(expires_at) < new Date();
             if (expired) {
                 console.warn('[openVault] BLOCKED: vault expired');
                 return res.status(403).json({ code: 'GEO_EXPIRED', error: 'This vault has expired. Ask the sender to create a new one.' });
             }
-            console.warn('[openVault] BLOCKED: recipient is out of geo-fence range');
-            return res.status(403).json({ code: 'GEO_OUT_OF_RANGE', error: 'You are outside the geo-fence. You must be within 50 metres of the sender to access this file.' });
+            console.warn(`[openVault] BLOCKED: recipient is ${distance_m}m away from anchor`);
+            return res.status(403).json({
+                code: 'GEO_OUT_OF_RANGE',
+                distanceMetres: distance_m,
+                error: `You are outside the geo-fence. You must be within 50 metres of the sender to access this file.`
+            });
         }
 
         res.json(result.rows[0]);
