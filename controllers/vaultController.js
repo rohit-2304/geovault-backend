@@ -63,7 +63,10 @@ exports.verifyLocation = async (req, res) => {
             console.log('[verifyLocation] Distance from IP location (m):', dist);
             if (dist > 50000) {
                 console.warn('[verifyLocation] BLOCKED: distance exceeds 50km');
-                return res.status(403).json({ error: 'Location spoofing detected.' });
+                return res.status(403).json({
+                    code: 'GEO_SPOOFING',
+                    error: 'Location spoofing detected. Your reported GPS coordinates do not match your network location.'
+                });
             }
         }
 
@@ -104,8 +107,20 @@ exports.openVault = async (req, res) => {
         console.log('[openVault] Rows returned:', result.rows.length);
 
         if (result.rows.length === 0) {
-            console.warn('[openVault] BLOCKED: vault not found, expired, or out of range');
-            return res.status(403).json({ error: 'Out of range or vault expired' });
+            // Distinguish between expired and out-of-range for a better UX
+            const checkQuery = `SELECT expires_at FROM vaults WHERE id = $1`;
+            const checkResult = await db.query(checkQuery, [id]);
+            if (checkResult.rows.length === 0) {
+                console.warn('[openVault] BLOCKED: vault does not exist');
+                return res.status(403).json({ code: 'GEO_NOT_FOUND', error: 'This vault does not exist or has already been used.' });
+            }
+            const expired = new Date(checkResult.rows[0].expires_at) < new Date();
+            if (expired) {
+                console.warn('[openVault] BLOCKED: vault expired');
+                return res.status(403).json({ code: 'GEO_EXPIRED', error: 'This vault has expired. Ask the sender to create a new one.' });
+            }
+            console.warn('[openVault] BLOCKED: recipient is out of geo-fence range');
+            return res.status(403).json({ code: 'GEO_OUT_OF_RANGE', error: 'You are outside the geo-fence. You must be within 50 metres of the sender to access this file.' });
         }
 
         res.json(result.rows[0]);
